@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "IoT Telemetry Core",
+    "slug": "hivemq-mqtt-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.anonymous.hivemqmqttapp",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.anonymous.hivemqmqttapp"
+    },
+    "plugins": [
+      "expo-status-bar"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "2988ff39-ad3a-4326-a023-b3b6960f28a8"
+      }
+    }
+  }
+}
