@@ -1,0 +1,12 @@
+{
+  "name": "SplitAds",
+  "description": "React Native Mobile App",
+  "files": {
+    "App.js": {
+      "type": "CODE"
+    },
+    "package.json": {
+      "type": "CODE"
+    }
+  }
+}
