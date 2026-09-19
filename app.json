@@ -16,7 +16,9 @@
       "package": "com.anonymous.hivemqmqttapp"
     },
     "plugins": [
-      "expo-status-bar"
+      "expo-status-bar",
+      "expo-build-properties",
+      "react-native-ble-plx"
     ],
     "extra": {
       "eas": {
