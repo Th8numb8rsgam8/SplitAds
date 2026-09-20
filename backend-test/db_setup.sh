@@ -28,3 +28,6 @@ CREATE DATABASE split_ads_db;
 mkdir backend-test && cd backend-test
 npm init -y
 npm install express pg dotenv
+
+npx ngrok config add-authtoken YOUR_COPIED_AUTHTOKEN
+npx ngrok http 3000
