@@ -16,10 +16,13 @@ import { BleManager } from 'react-native-ble-plx';
 import { Buffer } from 'buffer';
 
 const bleManager = new BleManager();
-const BACKEND_URL = 'https://YOUR_NGROK_SUBDOMAIN.ngrok-free.app';
+const BACKEND_URL = `http://${process.env.EXPO_PUBLIC_BACKEND_IP}:${process.env.EXPO_PUBLIC_BACKEND_PORT}`;
 
-const PROVISION_SERVICE_UUID = '12345678-1234-1234-1234-123456789abc';
-const PROVISION_CHARACTERISTIC_UUID = '87654321-4321-4321-4321-cba987654321';
+// const SERVICE_UUID = 'fb276586-c61e-4661-82f0-1103de595d24';
+// const SSID_CHARACTERISTIC_UUID = 'dec7d35a-b792-407c-90c9-23ef450fa12e';
+// const PASS_CHARACTERISTIC_UUID = '4f288931-5c70-4dae-8a7d-0a9114c5a5d3';
+// const JWT_CHARACTERISTIC_UUID = 'bbdbee0a-d16f-4f92-a46d-27b86ec71884';
+// const STATUS_CHARACTERISTIC_UUID = 'aec78c7c-4833-416b-b960-8db0f3e843e7';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const STRONG_PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!\%*?&]{8,}$/;
@@ -244,6 +247,13 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
       return;
     }
 
+   // Request runtime BLE permissions prior to executing scan/API calls
+    const hasPermission = await requestBLEPermissions();
+    if (!hasPermission) {
+      Alert.alert('Permission Denied', 'Bluetooth and Location permissions are required to pair edge devices.');
+      return;
+    }
+    
     setLoading(true);
 
     try {
@@ -258,12 +268,14 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to request setup');
 
-      const setupToken = data.setupToken; // Signed JWT token
+      const jwtToken = data.setupToken; // Signed JWT token
+
+      let isProcessingDevice = false;
 
       // Step 2: Scan for BLE Hardware
       setStatusText('Scanning for BLE hardware...');
       bleManager.startDeviceScan(
-        [PROVISION_SERVICE_UUID], 
+        [process.env.EXPO_PUBLIC_SERVICE_UUID], 
         null, 
         async (error, device) => {
           if (error) {
@@ -273,35 +285,122 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
             return;
           }
 
-        if (device) {
-          bleManager.stopDeviceScan();
-          setStatusText('Connecting via BLE...');
+          if (device && !isProcessingDevice) {
+            isProcessingDevice = true;
+            bleManager.stopDeviceScan();
+            let statusSubscription = null;
 
-          const connectedDevice = await device.connect();
-          await connectedDevice.discoverAllServicesAndCharacteristics();
+            try {
+              setStatusText('Connecting via BLE...');
 
-          // Step 3: Transmit Wi-Fi Credentials + JWT Payload
-          setStatusText('Sending configuration...');
-          const payload = JSON.stringify({
-            ssid: wifiSsid,
-            pass: wifiPassword,
-            token: setupToken, // Send signed JWT over BLE
-          });
+              const connectedDevice = await device.connect();
+              await connectedDevice.discoverAllServicesAndCharacteristics();
 
-          const base64Payload = Buffer.from(payload).toString('base64');
+              let currentMtu = 23;
+              if (Platform.OS === 'android') {
+                const negotiatedDevice = await connectedDevice.requestMTU(512);
+                currentMtu = negotiatedDevice.mtu;
+              }
 
-          await connectedDevice.writeCharacteristicWithResponseForService(
-            PROVISION_SERVICE_UUID,
-            PROVISION_CHARACTERISTIC_UUID,
-            base64Payload
-          );
+              // Listen for status updates
+              statusSubscription = bleManager.monitorCharacteristicForDevice(
+                connectedDevice.id,
+                process.env.EXPO_PUBLIC_SERVICE_UUID,
+                process.env.EXPO_PUBLIC_STATUS_CHARACTERISTIC_UUID,
+                (charError, characteristic) => {
+                  if (charError) {
+                    console.error('[BLE Subscription Error]:', charError);
+                    return;
+                  }
 
-          setStatusText('Device provisioned!');
-          Alert.alert('Success', 'Configuration sent over BLE. Hardware is connecting to Wi-Fi!');
-          setLoading(false);
-          onSuccess();
+                  if (characteristic?.value) {
+                    const liveStatus = Buffer.from(characteristic.value, 'base64').toString('utf-8');
+                    console.log('[BLE Live Status]:', liveStatus);
+                    setStatusText(`Device Status: ${liveStatus}`);
+
+                    if (liveStatus === 'SUCCESS') {
+                      if (statusSubscription) statusSubscription.remove();
+                      setLoading(false);
+                      Alert.alert('Success', 'Edge device provisioned and connected successfully!');
+                      onSuccess();
+                    } else if (liveStatus.startsWith('ERROR_')) {
+                      if (statusSubscription) statusSubscription.remove();
+                      setLoading(false);
+                      Alert.alert('Provisioning Error', `Hardware reported error: ${liveStatus}`);
+                    }
+                  }
+                }
+              )
+              await new Promise((resolve) => setTimeout(resolve, 300));
+
+              // Step 3: Transmit Wi-Fi Credentials + JWT Payload
+              // setStatusText('Sending SSID...');
+              const ssidBase64 = Buffer.from(wifiSsid).toString('base64');
+              await connectedDevice.writeCharacteristicWithResponseForService(
+                process.env.EXPO_PUBLIC_SERVICE_UUID,
+                process.env.EXPO_PUBLIC_SSID_CHARACTERISTIC_UUID,
+                ssidBase64
+              );
+
+              // setStatusText('Sending Password...');
+              const passBase64 = Buffer.from(wifiPassword).toString('base64');
+              await connectedDevice.writeCharacteristicWithResponseForService(
+                process.env.EXPO_PUBLIC_SERVICE_UUID,
+                process.env.EXPO_PUBLIC_PASS_CHARACTERISTIC_UUID,
+                passBase64
+              );
+
+              // setStatusText('Sending Token...');
+              // const negotiatedDevice = await connectedDevice.requestMTU(512);
+              const chunkSize = Math.min(currentMtu - 3, 180);
+              const totalChunks = Math.ceil(jwtToken.length / chunkSize);
+              for (let i = 0; i < jwtToken.length; i += chunkSize) {
+                const currentChunkNumber = Math.floor(i / chunkSize) + 1;
+                const chunk = jwtToken.slice(i, i + chunkSize);
+                const chunkBase64 = Buffer.from(chunk, 'utf-8').toString('base64');
+
+                console.log(`[BLE] Writing JWT chunk ${currentChunkNumber}/${totalChunks}...`);
+
+                await connectedDevice.writeCharacteristicWithResponseForService(
+                  process.env.EXPO_PUBLIC_SERVICE_UUID,
+                  process.env.EXPO_PUBLIC_JWT_CHARACTERISTIC_UUID,
+                  chunkBase64
+                );
+              }
+
+              // 2. Send __EOF__ marker to signal transmission completion
+              // console.log('Finalizing Token...');
+              const eofBase64 = Buffer.from('__EOF__', 'utf-8').toString('base64');
+              await connectedDevice.writeCharacteristicWithResponseForService(
+                process.env.EXPO_PUBLIC_SERVICE_UUID,
+                process.env.EXPO_PUBLIC_JWT_CHARACTERISTIC_UUID,
+                eofBase64
+              );
+
+              setStatusText('Waiting for hardware to connect to Wi-Fi...');
+
+              // 6. Fail-safe timeout in case physical BLE notification gets dropped
+              setTimeout(() => {
+                setLoading((currentLoading) => {
+                  if (currentLoading) {
+                    if (statusSubscription) statusSubscription.remove();
+                    Alert.alert(
+                      'Timeout',
+                      'Hardware did not respond in time. Please check Wi-Fi credentials.'
+                    );
+                    return false;
+                  }
+                  return false;
+                });
+              }, 35000);
+            } catch (innerErr) {
+              if (statusSubscription) statusSubscription.remove();
+              setLoading(false);
+              Alert.alert('Provisioning Error', innerErr.message)
+            }
+          }
         }
-      });
+      );
     } catch (err) {
       setLoading(false);
       Alert.alert('Provisioning Failed', err.message);

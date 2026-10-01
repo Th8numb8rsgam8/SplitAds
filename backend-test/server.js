@@ -5,9 +5,8 @@ const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
 
 const app = express();
+app.set('trust proxy', 'loopback'); // Trust the loopback interface for proxy headers
 app.use(express.json());
-
-const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-change-in-prod';
 
 // Regex Patterns
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -96,7 +95,7 @@ app.post('/api/auth/signup', async (req, res) => {
     // 2. Hash Password & Insert User
     const passwordHash = await bcrypt.hash(password, 10);
     const result = await client.query(
-      'INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id, username, email',
+      'INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id',
       [username, email.toLowerCase().trim(), passwordHash]
     );
 
@@ -105,7 +104,7 @@ app.post('/api/auth/signup', async (req, res) => {
     return res.status(201).json({
       message: 'Signup successful',
       user: {
-        user_id: result.rows[0],
+        id: result.rows[0].id,
       },
     });
   } catch (err) {
@@ -130,6 +129,10 @@ app.post('/api/devices/request-setup', async (req, res) => {
     return res.status(400).json({ error: 'User ID and Device Name are required.' });
   }
 
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+  const host = req.get('host');
+  const backendUrl = `${protocol}://${host}/api/devices/verify-setup`;
+
   try {
     // 1. Create temporary device entry to obtain UUID
     const tempDeviceId = (await pool.query('SELECT uuid_generate_v4() AS id')).rows[0].id;
@@ -147,8 +150,13 @@ app.post('/api/devices/request-setup', async (req, res) => {
 
     // 3. Create a stateless signed JWT token expiring in 15 minutes
     const setupToken = jwt.sign(
-      { userId: userId, deviceId: device.id, mqttTopic: device.mqtt_topic },
-      JWT_SECRET,
+      { 
+        userId: userId, 
+        backendUrl: backendUrl,
+        deviceId: device.id, 
+        mqttTopic: device.mqtt_topic 
+      },
+      process.env.JWT_SECRET,
       { expiresIn: '15m' }
     );
 
@@ -164,15 +172,31 @@ app.post('/api/devices/request-setup', async (req, res) => {
 
 // Step 2: Edge Device verifies JWT after connecting to Wi-Fi
 app.post('/api/devices/verify-setup', async (req, res) => {
-  const { setupToken } = req.body;
 
-  if (!setupToken) {
-    return res.status(400).json({ error: 'Setup token is required.' });
+  // 1. Extract the Authorization header
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ 
+      error: 'Unauthorized: Missing or malformed Bearer token.' 
+    });
+  }
+
+  // 2. Separate "Bearer" from the actual JWT string
+  const token = authHeader.split(' ')[1];
+
+  // 3. Extract hardware_id from the JSON request body
+  const { hardware_id } = req.body;
+
+  if (!hardware_id) {
+    return res.status(400).json({ 
+      error: 'Bad Request: Missing hardware_id in request body.' 
+    });
   }
 
   try {
     // Statelessly verify signature & expiration
-    const decoded = jwt.verify(setupToken, JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Fetch device record using decoded payload ID
     const result = await pool.query(

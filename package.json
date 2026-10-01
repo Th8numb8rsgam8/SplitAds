@@ -13,6 +13,7 @@
     "buffer": "^6.0.3",
     "expo": "~57.0.24",
     "expo-build-properties": "~57.0.21",
+    "expo-dev-client": "~57.0.19",
     "expo-status-bar": "~57.0.1",
     "mqtt": "^5.16.0",
     "react": "19.2.3",

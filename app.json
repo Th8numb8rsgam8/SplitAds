@@ -9,16 +9,25 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.anonymous.hivemqmqttapp",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSBluetoothPeripheralUsageDescription": "Allow $(PRODUCT_NAME) to discover and configure edge devices over Bluetooth."
       }
     },
     "android": {
-      "package": "com.anonymous.hivemqmqttapp"
+      "package": "com.anonymous.hivemqmqttapp",
+      "permissions": ["INTERNET"]
     },
     "plugins": [
       "expo-status-bar",
       "expo-build-properties",
-      "react-native-ble-plx"
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["peripheral", "central"],
+          "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to nearby Bluetooth hardware."
+        }
+      ]
     ],
     "extra": {
       "eas": {
