@@ -12,17 +12,11 @@ import {
   Platform,
   PermissionsAndroid,
 } from 'react-native';
-import { BleManager } from 'react-native-ble-plx';
+import { BleManager, BleError, BleErrorCode } from 'react-native-ble-plx';
 import { Buffer } from 'buffer';
 
 const bleManager = new BleManager();
 const BACKEND_URL = `http://${process.env.EXPO_PUBLIC_BACKEND_IP}:${process.env.EXPO_PUBLIC_BACKEND_PORT}`;
-
-// const SERVICE_UUID = 'fb276586-c61e-4661-82f0-1103de595d24';
-// const SSID_CHARACTERISTIC_UUID = 'dec7d35a-b792-407c-90c9-23ef450fa12e';
-// const PASS_CHARACTERISTIC_UUID = '4f288931-5c70-4dae-8a7d-0a9114c5a5d3';
-// const JWT_CHARACTERISTIC_UUID = 'bbdbee0a-d16f-4f92-a46d-27b86ec71884';
-// const STATUS_CHARACTERISTIC_UUID = 'aec78c7c-4833-416b-b960-8db0f3e843e7';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const STRONG_PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!\%*?&]{8,}$/;
@@ -242,6 +236,9 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
   }
 
   const handleStartOnboarding = async () => {
+
+    const sessionState = { isFinished: false };
+
     if (!deviceName.trim() || !wifiSsid.trim()) {
       Alert.alert('Validation Error', 'Device Name and Wi-Fi SSID are required.');
       return;
@@ -296,19 +293,32 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
               const connectedDevice = await device.connect();
               await connectedDevice.discoverAllServicesAndCharacteristics();
 
-              let currentMtu = 23;
-              if (Platform.OS === 'android') {
-                const negotiatedDevice = await connectedDevice.requestMTU(512);
-                currentMtu = negotiatedDevice.mtu;
-              }
-
               // Listen for status updates
               statusSubscription = bleManager.monitorCharacteristicForDevice(
                 connectedDevice.id,
                 process.env.EXPO_PUBLIC_SERVICE_UUID,
                 process.env.EXPO_PUBLIC_STATUS_CHARACTERISTIC_UUID,
                 (charError, characteristic) => {
+
                   if (charError) {
+
+                    if (sessionState.isFinished) {
+                      return;
+                    }
+
+                    const errorMsg = charError.message || '';
+                    const errorCode = charError.errorCode;
+
+                    if (
+                      errorCode === 2 ||
+                      errorCode === 201 ||
+                      errorMsg.toLowerCase().includes('cancel') ||
+                      errorMsg.toLowerCase().includes('disconnect')
+                    ) {
+                      // console.log('[BLE] Cleanly suppressed cancellation/teardown error:', errorMsg);
+                      return;
+                    }
+
                     console.error('[BLE Subscription Error]:', charError);
                     return;
                   }
@@ -319,12 +329,22 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
                     setStatusText(`Device Status: ${liveStatus}`);
 
                     if (liveStatus === 'SUCCESS') {
-                      if (statusSubscription) statusSubscription.remove();
+                      sessionState.isFinished = true
+
+                      if (statusSubscription){
+                        statusSubscription.remove();
+                        statusSubscription = null
+                      }
                       setLoading(false);
                       Alert.alert('Success', 'Edge device provisioned and connected successfully!');
                       onSuccess();
                     } else if (liveStatus.startsWith('ERROR_')) {
-                      if (statusSubscription) statusSubscription.remove();
+                      sessionState.isFinished = true;
+
+                      if (statusSubscription){
+                        statusSubscription.remove();
+                        statusSubscription = null
+                      }
                       setLoading(false);
                       Alert.alert('Provisioning Error', `Hardware reported error: ${liveStatus}`);
                     }
@@ -351,8 +371,8 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
               );
 
               // setStatusText('Sending Token...');
-              // const negotiatedDevice = await connectedDevice.requestMTU(512);
-              const chunkSize = Math.min(currentMtu - 3, 180);
+              const negotiatedDevice = await connectedDevice.requestMTU(512);
+              const chunkSize = negotiatedDevice.mtu;
               const totalChunks = Math.ceil(jwtToken.length / chunkSize);
               for (let i = 0; i < jwtToken.length; i += chunkSize) {
                 const currentChunkNumber = Math.floor(i / chunkSize) + 1;
@@ -381,22 +401,26 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
 
               // 6. Fail-safe timeout in case physical BLE notification gets dropped
               setTimeout(() => {
-                setLoading((currentLoading) => {
-                  if (currentLoading) {
-                    if (statusSubscription) statusSubscription.remove();
-                    Alert.alert(
-                      'Timeout',
-                      'Hardware did not respond in time. Please check Wi-Fi credentials.'
-                    );
-                    return false;
+                if (!sessionState.isFinished) {
+                  if (statusSubscription) {
+                    statusSubscription.remove();
+                    statusSubscription = null;
+                  } 
+                  setLoading(false);
+                  Alert.alert(
+                    'Timeout',
+                    'Hardware did not respond in time. Please check Wi-Fi credentials.');
                   }
-                  return false;
-                });
-              }, 35000);
+                }, 35000);
             } catch (innerErr) {
-              if (statusSubscription) statusSubscription.remove();
-              setLoading(false);
-              Alert.alert('Provisioning Error', innerErr.message)
+              if (!sessionState.isFinished){
+                if (statusSubscription){
+                  statusSubscription.remove();
+                  statusSubscription = null;
+                }
+                setLoading(false);
+                Alert.alert('Provisioning Error', innerErr.message)
+              }
             }
           }
         }
