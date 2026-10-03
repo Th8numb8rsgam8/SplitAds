@@ -10,9 +10,10 @@
     "prebuild": "expo prebuild"
   },
   "dependencies": {
+    "@types/react": "~19.2.4",
     "buffer": "^6.0.3",
-    "expo": "~57.0.24",
-    "expo-build-properties": "~57.0.21",
+    "expo": "~57.0.26",
+    "expo-build-properties": "~57.0.22",
     "expo-dev-client": "~57.0.19",
     "expo-status-bar": "~57.0.1",
     "mqtt": "^5.16.0",
@@ -21,7 +22,8 @@
     "react-native-ble-plx": "^3.5.1"
   },
   "devDependencies": {
-    "@babel/core": "^7.24.0"
+    "@babel/core": "^7.24.0",
+    "typescript": "~6.0.3"
   },
   "private": true
 }

@@ -11,21 +11,62 @@ import {
   Modal,
   Platform,
   PermissionsAndroid,
+  ListRenderItem
 } from 'react-native';
-import { BleManager, BleError, BleErrorCode } from 'react-native-ble-plx';
+import { BleManager, Device, Subscription, BleError } from 'react-native-ble-plx';
 import { Buffer } from 'buffer';
 
+export interface User {
+  id: string | number;
+  username: string;
+  email: string;
+}
+
+export interface DeviceItem {
+  id: string;
+  device_name: string;
+  mqtt_topic: string;
+}
+
+interface SignupScreenProps {
+  onSignupSuccess: (user: User) => void;
+}
+
+interface DeviceDashboardProps {
+  user: User;
+  onLogout: () => void;
+}
+
+interface AddDeviceBLEModalProps {
+  user: User;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+interface SessionState {
+  isFinished: boolean;
+}
+
 const bleManager = new BleManager();
-const BACKEND_URL = `http://${process.env.EXPO_PUBLIC_BACKEND_IP}:${process.env.EXPO_PUBLIC_BACKEND_PORT}`;
+
+const BACKEND_IP = process.env.EXPO_PUBLIC_BACKEND_IP ?? 'localhost';
+const BACKEND_PORT = process.env.EXPO_PUBLIC_BACKEND_PORT ?? '3000';
+const BACKEND_URL = `http://${BACKEND_IP}:${BACKEND_PORT}`;
+
+const SERVICE_UUID = process.env.EXPO_PUBLIC_SERVICE_UUID ?? '';
+const SSID_CHARACTERISTIC_UUID = process.env.EXPO_PUBLIC_SSID_CHARACTERISTIC_UUID ?? '';
+const PASS_CHARACTERISTIC_UUID = process.env.EXPO_PUBLIC_PASS_CHARACTERISTIC_UUID ?? '';
+const JWT_CHARACTERISTIC_UUID = process.env.EXPO_PUBLIC_JWT_CHARACTERISTIC_UUID ?? '';
+const STATUS_CHARACTERISTIC_UUID = process.env.EXPO_PUBLIC_STATUS_CHARACTERISTIC_UUID ?? '';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const STRONG_PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!\%*?&]{8,}$/;
 
-export default function App() {
-  const [currentUser, setCurrentUser] = useState(null);
+export default function App(): React.ReactElement {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
 
   if (!currentUser) {
-    return <SignupScreen onSignupSuccess={(user) => setCurrentUser(user)} />;
+    return <SignupScreen onSignupSuccess={(user: User) => setCurrentUser(user)} />;
   }
 
   return <DeviceDashboard user={currentUser} onLogout={() => setCurrentUser(null)} />;
@@ -34,13 +75,13 @@ export default function App() {
 // ----------------------------------------------------------------------------
 // SIGNUP SCREEN
 // ----------------------------------------------------------------------------
-function SignupScreen({ onSignupSuccess }) {
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
+function SignupScreen({ onSignupSuccess }: SignupScreenProps): React.ReactElement {
+  const [username, setUsername] = useState<string>('');
+  const [email, setEmail] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
+  const [loading, setLoading] = useState<boolean>(false);
 
-  const handleSignup = async () => {
+  const handleSignup = async (): Promise<void> => {
     if (!username.trim() || !email || !password) {
       Alert.alert('Error', 'Please fill in all fields.');
       return;
@@ -128,16 +169,16 @@ function SignupScreen({ onSignupSuccess }) {
 // ----------------------------------------------------------------------------
 // DASHBOARD SCREEN
 // ----------------------------------------------------------------------------
-function DeviceDashboard({ user, onLogout }) {
-  const [devices, setDevices] = useState([]);
-  const [fetching, setFetching] = useState(true);
-  const [modalVisible, setModalVisible] = useState(false);
+function DeviceDashboard({ user, onLogout }: DeviceDashboardProps) {
+  const [devices, setDevices] = useState<DeviceItem[]>([]);
+  const [fetching, setFetching] = useState<boolean>(true);
+  const [modalVisible, setModalVisible] = useState<boolean>(false);
 
   useEffect(() => {
     fetchDevices();
   }, []);
 
-  const fetchDevices = async () => {
+  const fetchDevices = async (): Promise<void> => {
     try {
       const response = await fetch(`${BACKEND_URL}/api/devices/${user.id}`);
       const data = await response.json();
@@ -150,6 +191,13 @@ function DeviceDashboard({ user, onLogout }) {
       setFetching(false);
     }
   };
+
+  const renderDeviceItem: ListRenderItem<DeviceItem> = ({ item }) => (
+    <View style={styles.deviceCard}>
+      <Text style={styles.deviceName}>{item.device_name}</Text>
+      <Text style={styles.deviceTopic}>Topic: {item.mqtt_topic}</Text>
+    </View>
+  );
 
   return (
     <View style={styles.dashboardContainer}>
@@ -171,13 +219,8 @@ function DeviceDashboard({ user, onLogout }) {
       ) : (
         <FlatList
           data={devices}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <View style={styles.deviceCard}>
-              <Text style={styles.deviceName}>{item.device_name}</Text>
-              <Text style={styles.deviceTopic}>Topic: {item.mqtt_topic}</Text>
-            </View>
-          )}
+          keyExtractor={(item: DeviceItem) => item.id}
+          renderItem={renderDeviceItem}
           ListEmptyComponent={<Text style={styles.emptyText}>No devices added yet.</Text>}
         />
       )}
@@ -199,14 +242,14 @@ function DeviceDashboard({ user, onLogout }) {
 // ----------------------------------------------------------------------------
 // BLE MODAL (Using JWT Setup Token)
 // ----------------------------------------------------------------------------
-function AddDeviceBLEModal({ user, onClose, onSuccess }) {
-  const [deviceName, setDeviceName] = useState('');
-  const [wifiSsid, setWifiSsid] = useState('');
-  const [wifiPassword, setWifiPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [statusText, setStatusText] = useState('');
+function AddDeviceBLEModal({ user, onClose, onSuccess }: AddDeviceBLEModalProps) {
+  const [deviceName, setDeviceName] = useState<string>('');
+  const [wifiSsid, setWifiSsid] = useState<string>('');
+  const [wifiPassword, setWifiPassword] = useState<string>('');
+  const [loading, setLoading] = useState<boolean>(false);
+  const [statusText, setStatusText] = useState<string>('');
 
-  const requestBLEPermissions = async () => {
+  const requestBLEPermissions = async (): Promise<boolean> => {
     if (Platform.OS === 'android') {
       // Android 12+ (API 31+) requires explicit Bluetooth permissions
       if (Platform.Version >= 31) {
@@ -235,9 +278,9 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
     return true;
   }
 
-  const handleStartOnboarding = async () => {
+  const handleStartOnboarding = async (): Promise<void> => {
 
-    const sessionState = { isFinished: false };
+    const sessionState: SessionState = { isFinished: false };
 
     if (!deviceName.trim() || !wifiSsid.trim()) {
       Alert.alert('Validation Error', 'Device Name and Wi-Fi SSID are required.');
@@ -272,9 +315,9 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
       // Step 2: Scan for BLE Hardware
       setStatusText('Scanning for BLE hardware...');
       bleManager.startDeviceScan(
-        [process.env.EXPO_PUBLIC_SERVICE_UUID], 
+        [SERVICE_UUID], 
         null, 
-        async (error, device) => {
+        async (error: BleError | null, device: Device | null) => {
           if (error) {
             bleManager.stopDeviceScan();
             setLoading(false);
@@ -285,7 +328,7 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
           if (device && !isProcessingDevice) {
             isProcessingDevice = true;
             bleManager.stopDeviceScan();
-            let statusSubscription = null;
+            let statusSubscription: Subscription | null = null;
 
             try {
               setStatusText('Connecting via BLE...');
@@ -296,10 +339,9 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
               // Listen for status updates
               statusSubscription = bleManager.monitorCharacteristicForDevice(
                 connectedDevice.id,
-                process.env.EXPO_PUBLIC_SERVICE_UUID,
-                process.env.EXPO_PUBLIC_STATUS_CHARACTERISTIC_UUID,
-                (charError, characteristic) => {
-
+                SERVICE_UUID,
+                STATUS_CHARACTERISTIC_UUID,
+                (charError: BleError | null, characteristic) => {
                   if (charError) {
 
                     if (sessionState.isFinished) {
@@ -357,16 +399,16 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
               // setStatusText('Sending SSID...');
               const ssidBase64 = Buffer.from(wifiSsid).toString('base64');
               await connectedDevice.writeCharacteristicWithResponseForService(
-                process.env.EXPO_PUBLIC_SERVICE_UUID,
-                process.env.EXPO_PUBLIC_SSID_CHARACTERISTIC_UUID,
+                SERVICE_UUID,
+                SSID_CHARACTERISTIC_UUID,
                 ssidBase64
               );
 
               // setStatusText('Sending Password...');
               const passBase64 = Buffer.from(wifiPassword).toString('base64');
               await connectedDevice.writeCharacteristicWithResponseForService(
-                process.env.EXPO_PUBLIC_SERVICE_UUID,
-                process.env.EXPO_PUBLIC_PASS_CHARACTERISTIC_UUID,
+                SERVICE_UUID,
+                PASS_CHARACTERISTIC_UUID,
                 passBase64
               );
 
@@ -382,8 +424,8 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
                 console.log(`[BLE] Writing JWT chunk ${currentChunkNumber}/${totalChunks}...`);
 
                 await connectedDevice.writeCharacteristicWithResponseForService(
-                  process.env.EXPO_PUBLIC_SERVICE_UUID,
-                  process.env.EXPO_PUBLIC_JWT_CHARACTERISTIC_UUID,
+                  SERVICE_UUID,
+                  JWT_CHARACTERISTIC_UUID,
                   chunkBase64
                 );
               }
@@ -392,8 +434,8 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
               // console.log('Finalizing Token...');
               const eofBase64 = Buffer.from('__EOF__', 'utf-8').toString('base64');
               await connectedDevice.writeCharacteristicWithResponseForService(
-                process.env.EXPO_PUBLIC_SERVICE_UUID,
-                process.env.EXPO_PUBLIC_JWT_CHARACTERISTIC_UUID,
+                SERVICE_UUID,
+                JWT_CHARACTERISTIC_UUID,
                 eofBase64
               );
 
@@ -412,22 +454,24 @@ function AddDeviceBLEModal({ user, onClose, onSuccess }) {
                     'Hardware did not respond in time. Please check Wi-Fi credentials.');
                   }
                 }, 35000);
-            } catch (innerErr) {
+            } catch (innerErr: unknown) {
               if (!sessionState.isFinished){
                 if (statusSubscription){
                   statusSubscription.remove();
                   statusSubscription = null;
                 }
                 setLoading(false);
-                Alert.alert('Provisioning Error', innerErr.message)
+                const errorMessage = innerErr instanceof Error ? innerErr.message : 'Unknown provisioning error';
+                Alert.alert('Provisioning Error', errorMessage);
               }
             }
           }
         }
       );
-    } catch (err) {
+    } catch (err: unknown) {
       setLoading(false);
-      Alert.alert('Provisioning Failed', err.message);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown onboarding error';
+      Alert.alert('Provisioning Failed', errorMessage);
     }
   };
 
